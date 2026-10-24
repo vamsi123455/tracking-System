@@ -1,0 +1,6 @@
+{
+  "name": "Highway Vehicle Tracking & Safety System",
+  "description": "Intelligent highway vehicle tracking and collision-risk warning prototype with real-time speed monitoring, opposite-direction detection, and V2X scenario simulation.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
