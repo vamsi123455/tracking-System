@@ -133,7 +133,9 @@ export const VehicleList: React.FC<VehicleListProps> = ({
 
                     <div className="flex items-center gap-1.5 text-[11px] text-slate-400 mt-0.5 leading-none">
                       <span className="font-mono tabular-nums text-slate-300 font-medium">
-                        {vehicle.distanceMeters}m
+                        {vehicle.distanceMeters >= 1000
+                          ? `${(vehicle.distanceMeters / 1000).toFixed(2)} km`
+                          : `${vehicle.distanceMeters}m`}
                       </span>
                       <span className="text-slate-600">·</span>
                       {isOpposite ? (

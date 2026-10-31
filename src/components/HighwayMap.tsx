@@ -8,7 +8,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
 import { Vehicle, HostVehicleState, SystemSettings } from '../types/vehicle';
 import { SCENARIOS } from '../simulator/scenarios';
-import { Crosshair, Navigation, Play, Pause, RotateCcw, Sliders } from 'lucide-react';
+import { Crosshair, Navigation, Play, Pause, RotateCcw, Sliders, Activity, MapPin } from 'lucide-react';
 
 interface HighwayMapProps {
   hostVehicle: HostVehicleState;
@@ -26,6 +26,9 @@ interface HighwayMapProps {
   onSelectScenario: (id: string) => void;
   settings: SystemSettings;
   onUpdateSettings: (newSettings: Partial<SystemSettings>) => void;
+  onOpenLocationModal?: () => void;
+  roadPolyline?: Array<{ lat: number; lng: number }>;
+  roadName?: string;
 }
 
 export const HighwayMap: React.FC<HighwayMapProps> = ({
@@ -43,6 +46,9 @@ export const HighwayMap: React.FC<HighwayMapProps> = ({
   onSelectScenario,
   settings,
   onUpdateSettings,
+  onOpenLocationModal,
+  roadPolyline,
+  roadName,
 }) => {
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
@@ -51,6 +57,7 @@ export const HighwayMap: React.FC<HighwayMapProps> = ({
   const vehicleMarkersRef = useRef<Map<string, L.Marker>>(new Map());
   const markerIconSignaturesRef = useRef<Map<string, string>>(new Map());
   const trajectoryLinesRef = useRef<L.Polyline[]>([]);
+  const roadGuideLineRef = useRef<L.Polyline | null>(null);
   
   const [autoFollow, setAutoFollow] = useState<boolean>(true);
   const [showControlsDrawer, setShowControlsDrawer] = useState<boolean>(false);
@@ -61,8 +68,8 @@ export const HighwayMap: React.FC<HighwayMapProps> = ({
 
     const map = L.map(mapContainerRef.current, {
       center: [hostVehicle.latitude, hostVehicle.longitude],
-      zoom: 17,
-      minZoom: 14,
+      zoom: 15,
+      minZoom: 13,
       maxZoom: 19,
       zoomControl: false,
       attributionControl: false,
@@ -141,6 +148,31 @@ export const HighwayMap: React.FC<HighwayMapProps> = ({
     }
   }, [hostVehicle, targetRadiusMeters, autoFollow]);
 
+  // Road Corridor Guide Line
+  useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map) return;
+
+    if (settings.showRoadGuide && roadPolyline && roadPolyline.length > 1) {
+      const latLngs: L.LatLngExpression[] = roadPolyline.map((p) => [p.lat, p.lng]);
+      if (!roadGuideLineRef.current) {
+        roadGuideLineRef.current = L.polyline(latLngs, {
+          color: '#0ea5e9',
+          weight: 4,
+          opacity: 0.6,
+        }).addTo(map);
+      } else {
+        roadGuideLineRef.current.setLatLngs(latLngs);
+        if (!map.hasLayer(roadGuideLineRef.current)) {
+          roadGuideLineRef.current.addTo(map);
+        }
+      }
+    } else if (roadGuideLineRef.current) {
+      roadGuideLineRef.current.remove();
+      roadGuideLineRef.current = null;
+    }
+  }, [roadPolyline, settings.showRoadGuide]);
+
   // Update Nearby Vehicles Markers
   useEffect(() => {
     const map = mapInstanceRef.current;
@@ -199,6 +231,9 @@ export const HighwayMap: React.FC<HighwayMapProps> = ({
 
       let marker = vehicleMarkersRef.current.get(vehicle.id);
       const pos: L.LatLngExpression = [vehicle.latitude, vehicle.longitude];
+      const distLabel = vehicle.distanceMeters >= 1000
+        ? `${(vehicle.distanceMeters / 1000).toFixed(2)}km`
+        : `${vehicle.distanceMeters}m`;
 
       if (!marker) {
         const iconHtml = `
@@ -217,8 +252,10 @@ export const HighwayMap: React.FC<HighwayMapProps> = ({
                 ${getCategoryIconSvg(vehicle.category)}
               </svg>
             </div>
-            <div class="absolute -bottom-5 left-1/2 -translate-x-1/2 whitespace-nowrap bg-slate-950/90 ${statusTextColor} text-[9px] font-mono font-semibold px-1 py-0.2 rounded border border-slate-700/80 shadow">
-              ${vehicle.speedStatus === 'SPEEDING' ? 'VIOLATION ' : ''}${speedDisplay}
+            <div class="absolute -bottom-6 left-1/2 -translate-x-1/2 whitespace-nowrap bg-slate-950/95 ${statusTextColor} text-[9px] font-mono font-semibold px-1.5 py-0.5 rounded border border-slate-700/80 shadow flex items-center gap-1">
+              <span>${vehicle.speedStatus === 'SPEEDING' ? '⚡ ' : ''}${speedDisplay}</span>
+              <span class="text-slate-600">·</span>
+              <span class="text-cyan-300 font-normal">${distLabel}</span>
             </div>
           </div>
         `;
@@ -255,8 +292,10 @@ export const HighwayMap: React.FC<HighwayMapProps> = ({
                   ${getCategoryIconSvg(vehicle.category)}
                 </svg>
               </div>
-              <div class="absolute -bottom-5 left-1/2 -translate-x-1/2 whitespace-nowrap bg-slate-950/90 ${statusTextColor} text-[9px] font-mono font-semibold px-1 py-0.2 rounded border border-slate-700/80 shadow">
-                ${vehicle.speedStatus === 'SPEEDING' ? 'VIOLATION ' : ''}${speedDisplay}
+              <div class="absolute -bottom-6 left-1/2 -translate-x-1/2 whitespace-nowrap bg-slate-950/95 ${statusTextColor} text-[9px] font-mono font-semibold px-1.5 py-0.5 rounded border border-slate-700/80 shadow flex items-center gap-1">
+                <span>${vehicle.speedStatus === 'SPEEDING' ? '⚡ ' : ''}${speedDisplay}</span>
+                <span class="text-slate-600">·</span>
+                <span class="text-cyan-300 font-normal">${distLabel}</span>
               </div>
             </div>
           `;
@@ -272,6 +311,23 @@ export const HighwayMap: React.FC<HighwayMapProps> = ({
         }
       }
 
+      // Render Dynamic Vehicle Breadcrumb Trajectory Trail
+      if (settings.showTraces && vehicle.trail && vehicle.trail.length > 1) {
+        let trailColor = '#10b981';
+        if (vehicle.communicationStatus === 'STALE') trailColor = '#64748b';
+        else if (vehicle.speedStatus === 'SPEEDING') trailColor = '#f43f5e';
+        else if (vehicle.directionStatus === 'OPPOSITE_DIRECTION') trailColor = '#f59e0b';
+
+        const latLngs: L.LatLngExpression[] = vehicle.trail.map((p) => [p.latitude, p.longitude]);
+        const tracePoly = L.polyline(latLngs, {
+          color: trailColor,
+          weight: 3,
+          opacity: 0.75,
+        }).addTo(map);
+        trajectoryLinesRef.current.push(tracePoly);
+      }
+
+      // Hazard collision vector
       if (isHazard && vehicle.distanceMeters <= targetRadiusMeters) {
         const polyline = L.polyline(
           [
@@ -288,7 +344,18 @@ export const HighwayMap: React.FC<HighwayMapProps> = ({
         trajectoryLinesRef.current.push(polyline);
       }
     });
-  }, [vehicles, hostVehicle, selectedVehicleId, targetRadiusMeters]);
+
+    // Render Host Vehicle Trajectory Trail
+    if (settings.showTraces && hostVehicle.trail && hostVehicle.trail.length > 1) {
+      const hostLatLngs: L.LatLngExpression[] = hostVehicle.trail.map((p) => [p.latitude, p.longitude]);
+      const hostTracePoly = L.polyline(hostLatLngs, {
+        color: '#06b6d4',
+        weight: 3.5,
+        opacity: 0.85,
+      }).addTo(map);
+      trajectoryLinesRef.current.push(hostTracePoly);
+    }
+  }, [vehicles, hostVehicle, selectedVehicleId, targetRadiusMeters, settings.showTraces]);
 
   return (
     <div className="relative w-full h-full min-h-[580px] rounded-xl overflow-hidden border border-slate-800/80 bg-slate-950 shadow-2xl">
@@ -296,27 +363,49 @@ export const HighwayMap: React.FC<HighwayMapProps> = ({
 
       {/* FLOATING TOP HUD: Compact Scenario Player & Legend */}
       <div className="absolute top-3 inset-x-3 z-[1000] flex flex-wrap items-center justify-between gap-2.5 pointer-events-none">
-        {/* Left: Minimalist Status Legend */}
-        <div className="pointer-events-auto bg-slate-950/85 backdrop-blur-md px-3 py-1.5 rounded-lg border border-slate-800/90 shadow-xl flex items-center gap-3 text-[11px] text-slate-300">
-          <div className="flex items-center gap-1.5">
-            <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
-            <span>&le;{settings.speedLimitKmh} km/h</span>
+        {/* Left: Minimalist Status Legend & Road-Lock Badge */}
+        <div className="flex items-center gap-2 pointer-events-auto">
+          <div className="bg-slate-950/85 backdrop-blur-md px-3 py-1.5 rounded-lg border border-slate-800/90 shadow-xl flex items-center gap-3 text-[11px] text-slate-300">
+            <div className="flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+              <span>&le;{settings.speedLimitKmh} km/h</span>
+            </div>
+            <span className="text-slate-700">·</span>
+            <div className="flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-full bg-rose-500"></span>
+              <span>Speeding</span>
+            </div>
+            <span className="text-slate-700">·</span>
+            <div className="flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-full bg-slate-500"></span>
+              <span>Stale</span>
+            </div>
+            <span className="text-slate-700">·</span>
+            <div className="flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-full bg-cyan-400"></span>
+              <span>Host</span>
+            </div>
           </div>
-          <span className="text-slate-700">·</span>
-          <div className="flex items-center gap-1.5">
-            <span className="w-2 h-2 rounded-full bg-rose-500"></span>
-            <span>Speeding</span>
-          </div>
-          <span className="text-slate-700">·</span>
-          <div className="flex items-center gap-1.5">
-            <span className="w-2 h-2 rounded-full bg-slate-500"></span>
-            <span>Stale</span>
-          </div>
-          <span className="text-slate-700">·</span>
-          <div className="flex items-center gap-1.5">
-            <span className="w-2 h-2 rounded-full bg-cyan-400"></span>
-            <span>Host</span>
-          </div>
+
+          {/* Road-Lock Pill Button */}
+          <button
+            onClick={() => onUpdateSettings({ roadLockEnabled: !settings.roadLockEnabled })}
+            className={`px-2.5 py-1.5 rounded-lg border backdrop-blur-md shadow-xl flex items-center gap-1.5 text-xs font-semibold transition-all ${
+              settings.roadLockEnabled
+                ? 'bg-emerald-950/85 border-emerald-600/80 text-emerald-300 hover:bg-emerald-900/85'
+                : 'bg-slate-950/85 border-slate-800 text-slate-400 hover:text-white'
+            }`}
+            title={
+              settings.roadLockEnabled
+                ? `Strict Road-Lock ACTIVE: Vehicles strictly on ${roadName || 'Highway'} pavement lanes`
+                : 'Free vector movement'
+            }
+          >
+            <Navigation className={`w-3.5 h-3.5 ${settings.roadLockEnabled ? 'text-emerald-400' : 'text-slate-500'}`} />
+            <span className="font-mono text-[11px]">
+              {settings.roadLockEnabled ? '🛣️ Road-Lock: ON' : 'Road-Lock: OFF'}
+            </span>
+          </button>
         </div>
 
         {/* Right: Integrated Scenario Control Capsule */}
@@ -360,6 +449,24 @@ export const HighwayMap: React.FC<HighwayMapProps> = ({
           </button>
 
           <div className="w-px h-4 bg-slate-800" />
+
+          {/* Real-World Location Access Button */}
+          {onOpenLocationModal && (
+            <button
+              onClick={onOpenLocationModal}
+              className={`p-1.5 rounded transition-all flex items-center gap-1.5 text-xs ${
+                hostVehicle.dataSource === 'GPS'
+                  ? 'bg-emerald-950 border border-emerald-700/80 text-emerald-300 shadow-sm'
+                  : 'text-slate-400 hover:text-white hover:bg-slate-850'
+              }`}
+              title="Access Real Device GPS or Switch Highway Corridor"
+            >
+              <MapPin className="w-3.5 h-3.5 text-cyan-400" />
+              <span className="hidden sm:inline text-[11px] font-medium">
+                {hostVehicle.dataSource === 'GPS' ? 'GPS Active' : 'Location'}
+              </span>
+            </button>
+          )}
 
           <button
             onClick={() => setShowControlsDrawer(!showControlsDrawer)}
@@ -405,17 +512,90 @@ export const HighwayMap: React.FC<HighwayMapProps> = ({
           <div>
             <div className="flex justify-between text-[11px] mb-1">
               <span className="text-slate-400">Radar Target Radius:</span>
-              <span className="font-mono font-bold text-cyan-400">{settings.targetRadiusMeters} meters</span>
+              <span className="font-mono font-bold text-cyan-400">
+                {settings.targetRadiusMeters >= 1000
+                  ? `${(settings.targetRadiusMeters / 1000).toFixed(1)} km (${settings.targetRadiusMeters}m)`
+                  : `${settings.targetRadiusMeters} meters`}
+              </span>
             </div>
             <input
               type="range"
-              min="50"
-              max="300"
-              step="10"
+              min="100"
+              max="2000"
+              step="50"
               value={settings.targetRadiusMeters}
               onChange={(e) => onUpdateSettings({ targetRadiusMeters: Number(e.target.value) })}
               className="w-full accent-cyan-500 h-1.5 bg-slate-800 rounded-lg cursor-pointer"
             />
+            {/* Quick preset buttons */}
+            <div className="flex gap-1 mt-1.5">
+              {[250, 500, 1000, 1500, 2000].map((r) => (
+                <button
+                  key={r}
+                  onClick={() => onUpdateSettings({ targetRadiusMeters: r })}
+                  className={`px-1 py-0.5 rounded text-[10px] font-mono flex-1 text-center transition-colors ${
+                    settings.targetRadiusMeters === r
+                      ? 'bg-cyan-500 text-slate-950 font-bold shadow-sm'
+                      : 'bg-slate-900 hover:bg-slate-850 text-slate-400 border border-slate-800'
+                  }`}
+                >
+                  {r >= 1000 ? `${r / 1000}km` : `${r}m`}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Dynamic Speed Traces Toggle */}
+          <div className="flex items-center justify-between pt-1 border-t border-slate-800/80 text-[11px]">
+            <span className="text-slate-400 flex items-center gap-1.5">
+              <Activity className="w-3 h-3 text-cyan-400" />
+              Dynamic Speed Traces:
+            </span>
+            <button
+              onClick={() => onUpdateSettings({ showTraces: !settings.showTraces })}
+              className={`px-2 py-0.5 rounded text-[10px] font-semibold border transition-colors ${
+                settings.showTraces
+                  ? 'bg-cyan-950 text-cyan-300 border-cyan-500/80'
+                  : 'bg-slate-900 text-slate-400 border-slate-700'
+              }`}
+            >
+              {settings.showTraces ? 'ENABLED' : 'MUTED'}
+            </button>
+          </div>
+
+          {/* Highway Road-Lock Toggle */}
+          <div className="flex items-center justify-between pt-1 border-t border-slate-800/80 text-[11px]">
+            <span className="text-slate-300 flex items-center gap-1.5 font-medium">
+              <Navigation className="w-3 h-3 text-emerald-400" />
+              Highway Road-Lock:
+            </span>
+            <button
+              onClick={() => onUpdateSettings({ roadLockEnabled: !settings.roadLockEnabled })}
+              className={`px-2 py-0.5 rounded text-[10px] font-bold border transition-colors ${
+                settings.roadLockEnabled
+                  ? 'bg-emerald-950 text-emerald-300 border-emerald-500/80 shadow-sm'
+                  : 'bg-slate-900 text-slate-400 border-slate-700'
+              }`}
+            >
+              {settings.roadLockEnabled ? 'LOCKED ON ROAD' : 'FREE VECTOR'}
+            </button>
+          </div>
+
+          {/* Road Corridor Guide Line Toggle */}
+          <div className="flex items-center justify-between pt-1 border-t border-slate-800/80 text-[11px]">
+            <span className="text-slate-400 flex items-center gap-1.5">
+              Road Centerline Guide:
+            </span>
+            <button
+              onClick={() => onUpdateSettings({ showRoadGuide: !settings.showRoadGuide })}
+              className={`px-2 py-0.5 rounded text-[10px] font-semibold border transition-colors ${
+                settings.showRoadGuide
+                  ? 'bg-cyan-950 text-cyan-300 border-cyan-500/80'
+                  : 'bg-slate-900 text-slate-400 border-slate-700'
+              }`}
+            >
+              {settings.showRoadGuide ? 'VISIBLE' : 'HIDDEN'}
+            </button>
           </div>
 
           <div className="flex items-center justify-between pt-1 border-t border-slate-800/80 text-[11px]">

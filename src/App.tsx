@@ -1,7 +1,7 @@
 /**
  * Highway Vehicle Tracking & Safety System - Main Application
- * Ultra-neat, streamlined ITS radar dashboard with Google Maps Platform (Satellite / Hybrid)
- * and high-density telemetry tracking.
+ * Ultra-neat, streamlined ITS radar dashboard with Google Maps Platform (Satellite / Hybrid),
+ * High-Accuracy Real-World Browser Geolocation, and Dynamic 1 km Radar Horizon.
  */
 
 import React, { useState, useEffect, useRef } from 'react';
@@ -16,6 +16,7 @@ import { ArchitectureModal } from './components/ArchitectureModal';
 import { TelemetryLogsModal } from './components/TelemetryLogsModal';
 import { ApiDocsModal } from './components/ApiDocsModal';
 import { FeaturesGuideModal } from './components/FeaturesGuideModal';
+import { RealLocationModal } from './components/RealLocationModal';
 import { HighwaySafetySimulator } from './simulator/engine';
 import { useGeolocation } from './hooks/useGeolocation';
 import {
@@ -29,7 +30,8 @@ import {
   loadStoredSettings,
   saveStoredSettings,
 } from './utils/storage';
-import { Info } from 'lucide-react';
+import { REAL_WORLD_PRESETS, RealWorldLocationPreset } from './utils/realLocations';
+import { MapPin, CheckCircle2, AlertCircle, X, Navigation } from 'lucide-react';
 
 const GOOGLE_MAPS_API_KEY =
   import.meta.env.VITE_GOOGLE_MAPS_API_KEY || 'AIzaSyBLAC8IVh7IEjPfZ0l6NRneXGyWrFx3tVI';
@@ -52,8 +54,11 @@ export default function App() {
     dataSource: 'SIMULATED',
     isGpsActive: false,
     gpsError: null,
+    locationName: 'Hyderabad Outer Ring Road (ORR)',
   });
   const [alerts, setAlerts] = useState<SafetyAlert[]>([]);
+  const [roadPolyline, setRoadPolyline] = useState<Array<{ lat: number; lng: number }>>([]);
+  const [roadName, setRoadName] = useState<string>('Hyderabad Outer Ring Road (ORR)');
   const [isSimRunning, setIsSimRunning] = useState<boolean>(false);
   const [activeScenarioId, setActiveScenarioId] = useState<string>('normal-traffic');
   const [selectedVehicleId, setSelectedVehicleId] = useState<string | null>(null);
@@ -67,6 +72,13 @@ export default function App() {
   const [isLogsModalOpen, setIsLogsModalOpen] = useState<boolean>(false);
   const [isDocsModalOpen, setIsDocsModalOpen] = useState<boolean>(false);
   const [isFeaturesGuideOpen, setIsFeaturesGuideOpen] = useState<boolean>(false);
+  const [isLocationModalOpen, setIsLocationModalOpen] = useState<boolean>(false);
+
+  // Real Location Toast Notification
+  const [locationToast, setLocationToast] = useState<{
+    message: string;
+    type: 'success' | 'info' | 'error';
+  } | null>(null);
 
   // Browser Geolocation
   const { gpsData, startWatching, stopWatching } = useGeolocation();
@@ -87,6 +99,8 @@ export default function App() {
       setVehicles(state.vehicles);
       setHostVehicle(state.host);
       setAlerts(state.alerts);
+      if (state.roadPolyline) setRoadPolyline(state.roadPolyline);
+      if (state.roadName) setRoadName(state.roadName);
     });
 
     // Auto-start simulation for continuous smooth tracking
@@ -108,8 +122,24 @@ export default function App() {
         speedKmh: gpsData.speedKmh,
         heading: gpsData.heading,
         accuracyMeters: gpsData.accuracyMeters,
+        locationName: gpsData.placeName || undefined,
       });
-    } else if (gpsData.status === 'DENIED' || gpsData.status === 'UNAVAILABLE') {
+
+      setLocationToast({
+        message: `📍 Physical Location Locked: ${gpsData.placeName || `${gpsData.latitude.toFixed(4)}°N, ${gpsData.longitude.toFixed(4)}°E`} (±${gpsData.accuracyMeters ?? 5}m accuracy) · 1 km radar horizon centered at your real position!`,
+        type: 'success',
+      });
+      const t = setTimeout(() => setLocationToast(null), 6000);
+      return () => clearTimeout(t);
+    } else if (gpsData.status === 'DENIED') {
+      simulatorRef.current?.setGpsError(gpsData.error);
+      setLocationToast({
+        message: 'Location access was denied in browser. Demonstrating with high-precision Highway corridor.',
+        type: 'info',
+      });
+      const t = setTimeout(() => setLocationToast(null), 6000);
+      return () => clearTimeout(t);
+    } else if (gpsData.status === 'UNAVAILABLE' && gpsData.error) {
       simulatorRef.current?.setGpsError(gpsData.error);
     }
   }, [gpsData]);
@@ -150,13 +180,42 @@ export default function App() {
     startWatching();
   };
 
-  const handleToggleGps = (enable: boolean) => {
-    if (!enable) {
-      stopWatching();
-      simulatorRef.current?.toggleGpsMode(false);
-    } else {
-      startWatching();
-    }
+  const handleStopGps = () => {
+    stopWatching();
+    simulatorRef.current?.toggleGpsMode(false);
+    setLocationToast({
+      message: 'Physical GPS disconnected. Resumed simulated highway tracking.',
+      type: 'info',
+    });
+    setTimeout(() => setLocationToast(null), 4000);
+  };
+
+  const handleSelectPreset = (preset: RealWorldLocationPreset) => {
+    stopWatching();
+    simulatorRef.current?.setHostLocation(
+      preset.latitude,
+      preset.longitude,
+      preset.heading,
+      preset.name,
+      false
+    );
+    handleUpdateSettings({ speedLimitKmh: preset.speedLimitKmh });
+    setLocationToast({
+      message: `🛣️ Radar repositioned to ${preset.name} (${preset.speedLimitKmh} km/h limit). Google Satellite view updating...`,
+      type: 'success',
+    });
+    setTimeout(() => setLocationToast(null), 5000);
+  };
+
+  const handleApplyCustomCoords = (lat: number, lon: number, name?: string) => {
+    stopWatching();
+    const displayName = name || `Coord: ${lat.toFixed(4)}, ${lon.toFixed(4)}`;
+    simulatorRef.current?.setHostLocation(lat, lon, 45, displayName, false);
+    setLocationToast({
+      message: `📍 Radar centered at custom coordinates: ${displayName}`,
+      type: 'success',
+    });
+    setTimeout(() => setLocationToast(null), 5000);
   };
 
   const selectedVehicle = vehicles.find((v) => v.id === selectedVehicleId) || null;
@@ -195,13 +254,40 @@ export default function App() {
         onOpenLogs={() => setIsLogsModalOpen(true)}
         onOpenDocs={() => setIsDocsModalOpen(true)}
         onOpenFeaturesGuide={() => setIsFeaturesGuideOpen(true)}
+        onOpenLocationModal={() => setIsLocationModalOpen(true)}
         isSimulatedOffline={settings.isOfflineSimulated}
         mapEngine={mapEngine}
         setMapEngine={setMapEngine}
+        gpsStatus={gpsData.status}
+        locationName={hostVehicle.locationName}
       />
 
       {/* Main Container */}
       <main className="flex-1 max-w-[1700px] w-full mx-auto p-3.5 md:p-5 flex flex-col gap-3.5">
+        {/* Real Location Toast Notification Banner */}
+        {locationToast && (
+          <div
+            className={`p-2.5 rounded-lg border text-xs flex items-center justify-between shadow-xl animate-in fade-in slide-in-from-top-2 duration-200 ${
+              locationToast.type === 'success'
+                ? 'bg-emerald-950/90 border-emerald-700 text-emerald-200'
+                : locationToast.type === 'error'
+                ? 'bg-rose-950/90 border-rose-700 text-rose-200'
+                : 'bg-cyan-950/90 border-cyan-700 text-cyan-200'
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 shrink-0" />
+              <span className="font-medium">{locationToast.message}</span>
+            </div>
+            <button
+              onClick={() => setLocationToast(null)}
+              className="p-1 hover:opacity-80 transition-opacity"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
+
         {/* Collision & Safety Alert Banner (Only fires on hazards) */}
         <CollisionAlertBanner
           alerts={alerts}
@@ -220,6 +306,11 @@ export default function App() {
           speedLimitKmh={settings.speedLimitKmh}
           oncomingCount={oncomingCount}
           hostVehicle={hostVehicle}
+          onOpenLocationModal={() => setIsLocationModalOpen(true)}
+          gpsStatus={gpsData.status}
+          roadLockEnabled={settings.roadLockEnabled}
+          roadName={roadName}
+          onToggleRoadLock={() => handleUpdateSettings({ roadLockEnabled: !settings.roadLockEnabled })}
         />
 
         {/* Tab 1: Live Monitor Radar */}
@@ -244,6 +335,9 @@ export default function App() {
                   onSelectScenario={handleSelectScenario}
                   settings={settings}
                   onUpdateSettings={handleUpdateSettings}
+                  onOpenLocationModal={() => setIsLocationModalOpen(true)}
+                  roadPolyline={roadPolyline}
+                  roadName={roadName}
                 />
               ) : (
                 <HighwayMap
@@ -261,6 +355,9 @@ export default function App() {
                   onSelectScenario={handleSelectScenario}
                   settings={settings}
                   onUpdateSettings={handleUpdateSettings}
+                  onOpenLocationModal={() => setIsLocationModalOpen(true)}
+                  roadPolyline={roadPolyline}
+                  roadName={roadName}
                 />
               )}
             </div>
@@ -354,12 +451,23 @@ export default function App() {
 
         {/* Minimalist Bottom Disclaimer Strip */}
         <div className="py-1 px-2 text-[10px] text-slate-500 flex items-center justify-between font-mono">
-          <span>DEMO / SIMULATED ENVIRONMENT · 60 FPS Continuous Radar · 100m Detection Horizon</span>
+          <span>REAL-WORLD GPS &amp; ITS RADAR · 60 FPS Kinematics · 1 km (1000m) Detection &amp; Speed Tracing Horizon</span>
           <span>Google Maps Platform Integration</span>
         </div>
       </main>
 
       {/* Modals */}
+      <RealLocationModal
+        isOpen={isLocationModalOpen}
+        onClose={() => setIsLocationModalOpen(false)}
+        gpsData={gpsData}
+        onRequestGps={handleRequestGps}
+        onStopGps={handleStopGps}
+        hostVehicle={hostVehicle}
+        onSelectPreset={handleSelectPreset}
+        onApplyCustomCoords={handleApplyCustomCoords}
+      />
+
       {isDetailsModalExplicitOpen && selectedVehicle && (
         <VehicleDetailsModal
           vehicle={selectedVehicle}

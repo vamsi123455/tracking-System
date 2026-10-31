@@ -4,7 +4,7 @@
  * 60 FPS smooth kinematic following, radar horizon overlay, and conflict vectors.
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   APIProvider,
   Map,
@@ -13,7 +13,19 @@ import {
 } from '@vis.gl/react-google-maps';
 import { Vehicle, HostVehicleState, SystemSettings } from '../types/vehicle';
 import { SCENARIOS } from '../simulator/scenarios';
-import { Crosshair, Navigation, Play, Pause, RotateCcw, Sliders, Gauge, Eye, EyeOff } from 'lucide-react';
+import {
+  Crosshair,
+  Navigation,
+  Play,
+  Pause,
+  RotateCcw,
+  Sliders,
+  Gauge,
+  Eye,
+  EyeOff,
+  Activity,
+  MapPin,
+} from 'lucide-react';
 
 interface GoogleHighwayMapProps {
   apiKey: string;
@@ -32,6 +44,9 @@ interface GoogleHighwayMapProps {
   onSelectScenario: (id: string) => void;
   settings: SystemSettings;
   onUpdateSettings: (newSettings: Partial<SystemSettings>) => void;
+  onOpenLocationModal?: () => void;
+  roadPolyline?: Array<{ lat: number; lng: number }>;
+  roadName?: string;
 }
 
 // Smooth camera controller
@@ -52,6 +67,227 @@ function MapCameraController({
   return null;
 }
 
+// Dedicated Layer for Geographical 1 km Radar Horizon Circles, Real-time Vehicle Traces, & Highway Road Guides
+function GoogleRadarAndTracesLayer({
+  hostVehicle,
+  vehicles,
+  targetRadiusMeters,
+  showTraces,
+  roadPolyline,
+  showRoadGuide,
+}: {
+  hostVehicle: HostVehicleState;
+  vehicles: Vehicle[];
+  targetRadiusMeters: number;
+  showTraces: boolean;
+  roadPolyline?: Array<{ lat: number; lng: number }>;
+  showRoadGuide?: boolean;
+}) {
+  const map = useMap();
+  const primaryCircleRef = useRef<google.maps.Circle | null>(null);
+  const ring250Ref = useRef<google.maps.Circle | null>(null);
+  const ring500Ref = useRef<google.maps.Circle | null>(null);
+  const polylinesMapRef = useRef<globalThis.Map<string, google.maps.Polyline>>(new globalThis.Map());
+  const hostPolylineRef = useRef<google.maps.Polyline | null>(null);
+  const roadGuidePolylineRef = useRef<google.maps.Polyline | null>(null);
+
+  // 0. Highway Corridor Road Polyline Guide
+  useEffect(() => {
+    if (!map) return;
+
+    if (showRoadGuide && roadPolyline && roadPolyline.length > 1) {
+      const path = roadPolyline.map((p) => ({ lat: p.lat, lng: p.lng }));
+      if (!roadGuidePolylineRef.current) {
+        roadGuidePolylineRef.current = new google.maps.Polyline({
+          map,
+          path,
+          strokeColor: '#0ea5e9',
+          strokeOpacity: 0.55,
+          strokeWeight: 4,
+          clickable: false,
+        });
+      } else {
+        roadGuidePolylineRef.current.setMap(map);
+        roadGuidePolylineRef.current.setPath(path);
+      }
+    } else if (roadGuidePolylineRef.current) {
+      roadGuidePolylineRef.current.setMap(null);
+    }
+  }, [map, roadPolyline, showRoadGuide]);
+
+  // Clean up road guide on unmount
+  useEffect(() => {
+    return () => {
+      if (roadGuidePolylineRef.current) {
+        roadGuidePolylineRef.current.setMap(null);
+        roadGuidePolylineRef.current = null;
+      }
+    };
+  }, []);
+
+  // 1. Geographical Radar Circles
+  useEffect(() => {
+    if (!map) return;
+    const center = { lat: hostVehicle.latitude, lng: hostVehicle.longitude };
+
+    // Primary target horizon circle (1000m / 1 km)
+    if (!primaryCircleRef.current) {
+      primaryCircleRef.current = new google.maps.Circle({
+        map,
+        center,
+        radius: targetRadiusMeters,
+        strokeColor: '#06b6d4',
+        strokeOpacity: 0.85,
+        strokeWeight: 2,
+        fillColor: '#06b6d4',
+        fillOpacity: 0.04,
+        clickable: false,
+      });
+    } else {
+      primaryCircleRef.current.setCenter(center);
+      primaryCircleRef.current.setRadius(targetRadiusMeters);
+    }
+
+    // Inner concentric guide rings (500m & 250m)
+    if (targetRadiusMeters >= 500) {
+      if (!ring500Ref.current) {
+        ring500Ref.current = new google.maps.Circle({
+          map,
+          center,
+          radius: 500,
+          strokeColor: '#38bdf8',
+          strokeOpacity: 0.35,
+          strokeWeight: 1,
+          fillOpacity: 0,
+          clickable: false,
+        });
+      } else {
+        ring500Ref.current.setCenter(center);
+      }
+
+      if (!ring250Ref.current) {
+        ring250Ref.current = new google.maps.Circle({
+          map,
+          center,
+          radius: 250,
+          strokeColor: '#38bdf8',
+          strokeOpacity: 0.3,
+          strokeWeight: 1,
+          fillOpacity: 0,
+          clickable: false,
+        });
+      } else {
+        ring250Ref.current.setCenter(center);
+      }
+    } else {
+      if (ring500Ref.current) {
+        ring500Ref.current.setMap(null);
+        ring500Ref.current = null;
+      }
+      if (ring250Ref.current) {
+        ring250Ref.current.setMap(null);
+        ring250Ref.current = null;
+      }
+    }
+  }, [map, hostVehicle.latitude, hostVehicle.longitude, targetRadiusMeters]);
+
+  // Clean up circles on unmount
+  useEffect(() => {
+    return () => {
+      if (primaryCircleRef.current) primaryCircleRef.current.setMap(null);
+      if (ring250Ref.current) ring250Ref.current.setMap(null);
+      if (ring500Ref.current) ring500Ref.current.setMap(null);
+    };
+  }, []);
+
+  // 2. Trajectory & Speed Traces (Polylines)
+  useEffect(() => {
+    if (!map) return;
+
+    if (!showTraces) {
+      polylinesMapRef.current.forEach((pl) => pl.setMap(null));
+      polylinesMapRef.current.clear();
+      if (hostPolylineRef.current) {
+        hostPolylineRef.current.setMap(null);
+        hostPolylineRef.current = null;
+      }
+      return;
+    }
+
+    // Host Vehicle Trace
+    if (hostVehicle.trail && hostVehicle.trail.length > 1) {
+      const hostPath = hostVehicle.trail.map((p) => ({ lat: p.latitude, lng: p.longitude }));
+      if (!hostPolylineRef.current) {
+        hostPolylineRef.current = new google.maps.Polyline({
+          map,
+          path: hostPath,
+          strokeColor: '#06b6d4',
+          strokeOpacity: 0.85,
+          strokeWeight: 3.5,
+          clickable: false,
+        });
+      } else {
+        hostPolylineRef.current.setPath(hostPath);
+      }
+    }
+
+    // Vehicle Traces
+    const currentIds = new Set<string>();
+    vehicles.forEach((v) => {
+      currentIds.add(v.id);
+      if (!v.trail || v.trail.length < 2) return;
+
+      const path = v.trail.map((p) => ({ lat: p.latitude, lng: p.longitude }));
+      let color = '#10b981'; // Green (compliant)
+      if (v.communicationStatus === 'STALE') {
+        color = '#64748b'; // Grey (stale)
+      } else if (v.speedStatus === 'SPEEDING') {
+        color = '#f43f5e'; // Red (speeding)
+      } else if (v.directionStatus === 'OPPOSITE_DIRECTION') {
+        color = '#f59e0b'; // Amber (oncoming)
+      }
+
+      let poly = polylinesMapRef.current.get(v.id);
+      if (!poly) {
+        poly = new google.maps.Polyline({
+          map,
+          path,
+          strokeColor: color,
+          strokeOpacity: 0.75,
+          strokeWeight: 3,
+          clickable: false,
+        });
+        polylinesMapRef.current.set(v.id, poly);
+      } else {
+        poly.setPath(path);
+        poly.setOptions({ strokeColor: color });
+      }
+    });
+
+    // Remove defunct vehicles
+    polylinesMapRef.current.forEach((poly, id) => {
+      if (!currentIds.has(id)) {
+        poly.setMap(null);
+        polylinesMapRef.current.delete(id);
+      }
+    });
+  }, [map, showTraces, hostVehicle.trail, vehicles]);
+
+  // Clean up polylines on unmount
+  useEffect(() => {
+    return () => {
+      polylinesMapRef.current.forEach((pl) => pl.setMap(null));
+      polylinesMapRef.current.clear();
+      if (hostPolylineRef.current) {
+        hostPolylineRef.current.setMap(null);
+        hostPolylineRef.current = null;
+      }
+    };
+  }, []);
+
+  return null;
+}
+
 export const GoogleHighwayMap: React.FC<GoogleHighwayMapProps> = ({
   apiKey,
   hostVehicle,
@@ -68,6 +304,9 @@ export const GoogleHighwayMap: React.FC<GoogleHighwayMapProps> = ({
   onSelectScenario,
   settings,
   onUpdateSettings,
+  onOpenLocationModal,
+  roadPolyline,
+  roadName,
 }) => {
   const [autoFollow, setAutoFollow] = useState<boolean>(true);
   const [mapType, setMapType] = useState<'hybrid' | 'satellite' | 'roadmap'>('hybrid');
@@ -121,7 +360,7 @@ export const GoogleHighwayMap: React.FC<GoogleHighwayMapProps> = ({
           mapId="DEMO_MAP_ID"
           internalUsageAttributionIds={['gmp_mcp_codeassist_v1_aistudio']}
           defaultCenter={{ lat: hostVehicle.latitude, lng: hostVehicle.longitude }}
-          defaultZoom={17}
+          defaultZoom={15}
           mapTypeId={mapType}
           gestureHandling="greedy"
           disableDefaultUI={false}
@@ -130,20 +369,24 @@ export const GoogleHighwayMap: React.FC<GoogleHighwayMapProps> = ({
         >
           <MapCameraController hostVehicle={hostVehicle} autoFollow={autoFollow} />
 
+          {/* Geographical 1.0 km Radar Horizon & Real-Time Trajectory Speed Traces */}
+          <GoogleRadarAndTracesLayer
+            hostVehicle={hostVehicle}
+            vehicles={vehicles}
+            targetRadiusMeters={targetRadiusMeters}
+            showTraces={settings.showTraces}
+            roadPolyline={roadPolyline}
+            showRoadGuide={settings.showRoadGuide}
+          />
+
           {/* Host Vehicle Advanced Marker */}
           <AdvancedMarker
             position={{ lat: hostVehicle.latitude, lng: hostVehicle.longitude }}
             zIndex={1000}
           >
             <div className="relative flex items-center justify-center cursor-pointer group">
-              {/* 100m Radar Horizon Ring */}
-              <div
-                className="absolute rounded-full border border-cyan-400/60 bg-cyan-500/10 pointer-events-none radar-pulse"
-                style={{
-                  width: `${targetRadiusMeters * 3.4}px`,
-                  height: `${targetRadiusMeters * 3.4}px`,
-                }}
-              />
+              {/* Subtle Host Proximity Halo */}
+              <div className="absolute w-12 h-12 rounded-full border border-cyan-400/50 bg-cyan-500/15 pointer-events-none radar-pulse" />
 
               <div
                 className="w-9 h-9 rounded-full bg-cyan-600 border-2 border-white shadow-xl flex items-center justify-center text-white transition-transform"
@@ -228,12 +471,17 @@ export const GoogleHighwayMap: React.FC<GoogleHighwayMapProps> = ({
                     </svg>
                   </div>
 
-                  {/* Micro label badge */}
+                  {/* Micro label badge with Speed and Distance */}
                   <div
-                    className={`absolute -bottom-5 left-1/2 -translate-x-1/2 whitespace-nowrap bg-slate-950/95 ${statusTextColor} text-[9px] font-mono font-semibold px-1.5 py-0.2 rounded border border-slate-700/80 shadow`}
+                    className={`absolute -bottom-6 left-1/2 -translate-x-1/2 whitespace-nowrap bg-slate-950/95 ${statusTextColor} text-[9px] font-mono font-semibold px-1.5 py-0.5 rounded border border-slate-700/80 shadow flex items-center gap-1`}
                   >
-                    {vehicle.speedStatus === 'SPEEDING' ? 'VIOLATION ' : ''}
-                    {speedDisplay}
+                    <span>{vehicle.speedStatus === 'SPEEDING' ? '⚡ ' : ''}{speedDisplay}</span>
+                    <span className="text-slate-600">·</span>
+                    <span className="text-cyan-300 font-normal">
+                      {vehicle.distanceMeters >= 1000
+                        ? `${(vehicle.distanceMeters / 1000).toFixed(2)}km`
+                        : `${vehicle.distanceMeters}m`}
+                    </span>
                   </div>
                 </div>
               </AdvancedMarker>
@@ -244,27 +492,49 @@ export const GoogleHighwayMap: React.FC<GoogleHighwayMapProps> = ({
 
       {/* FLOATING TOP HUD: Compact Scenario Player & Legend */}
       <div className="absolute top-3 inset-x-3 z-10 flex flex-wrap items-center justify-between gap-2.5 pointer-events-none">
-        {/* Left: Minimalist Status Legend */}
-        <div className="pointer-events-auto bg-slate-950/85 backdrop-blur-md px-3 py-1.5 rounded-lg border border-slate-800/90 shadow-xl flex items-center gap-3 text-[11px] text-slate-300">
-          <div className="flex items-center gap-1.5">
-            <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
-            <span>&le;{settings.speedLimitKmh} km/h</span>
+        {/* Left: Minimalist Status Legend & Road-Lock Badge */}
+        <div className="flex items-center gap-2 pointer-events-auto">
+          <div className="bg-slate-950/85 backdrop-blur-md px-3 py-1.5 rounded-lg border border-slate-800/90 shadow-xl flex items-center gap-3 text-[11px] text-slate-300">
+            <div className="flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+              <span>&le;{settings.speedLimitKmh} km/h</span>
+            </div>
+            <span className="text-slate-700">·</span>
+            <div className="flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-full bg-rose-500"></span>
+              <span>Speeding</span>
+            </div>
+            <span className="text-slate-700">·</span>
+            <div className="flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-full bg-slate-500"></span>
+              <span>Stale</span>
+            </div>
+            <span className="text-slate-700">·</span>
+            <div className="flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-full bg-cyan-400"></span>
+              <span>Host</span>
+            </div>
           </div>
-          <span className="text-slate-700">·</span>
-          <div className="flex items-center gap-1.5">
-            <span className="w-2 h-2 rounded-full bg-rose-500"></span>
-            <span>Speeding</span>
-          </div>
-          <span className="text-slate-700">·</span>
-          <div className="flex items-center gap-1.5">
-            <span className="w-2 h-2 rounded-full bg-slate-500"></span>
-            <span>Stale</span>
-          </div>
-          <span className="text-slate-700">·</span>
-          <div className="flex items-center gap-1.5">
-            <span className="w-2 h-2 rounded-full bg-cyan-400"></span>
-            <span>Host</span>
-          </div>
+
+          {/* Road-Lock Pill Button */}
+          <button
+            onClick={() => onUpdateSettings({ roadLockEnabled: !settings.roadLockEnabled })}
+            className={`px-2.5 py-1.5 rounded-lg border backdrop-blur-md shadow-xl flex items-center gap-1.5 text-xs font-semibold transition-all ${
+              settings.roadLockEnabled
+                ? 'bg-emerald-950/85 border-emerald-600/80 text-emerald-300 hover:bg-emerald-900/85'
+                : 'bg-slate-950/85 border-slate-800 text-slate-400 hover:text-white'
+            }`}
+            title={
+              settings.roadLockEnabled
+                ? `Strict Road-Lock ACTIVE: Vehicles strictly on ${roadName || 'Highway'} pavement lanes`
+                : 'Free vector movement'
+            }
+          >
+            <Navigation className={`w-3.5 h-3.5 ${settings.roadLockEnabled ? 'text-emerald-400' : 'text-slate-500'}`} />
+            <span className="font-mono text-[11px]">
+              {settings.roadLockEnabled ? '🛣️ Road-Lock: ON' : 'Road-Lock: OFF'}
+            </span>
+          </button>
         </div>
 
         {/* Right: Integrated Scenario Control Capsule */}
@@ -308,6 +578,24 @@ export const GoogleHighwayMap: React.FC<GoogleHighwayMapProps> = ({
           </button>
 
           <div className="w-px h-4 bg-slate-800" />
+
+          {/* Real-World Location Access Button */}
+          {onOpenLocationModal && (
+            <button
+              onClick={onOpenLocationModal}
+              className={`p-1.5 rounded transition-all flex items-center gap-1.5 text-xs ${
+                hostVehicle.dataSource === 'GPS'
+                  ? 'bg-emerald-950 border border-emerald-700/80 text-emerald-300 shadow-sm'
+                  : 'text-slate-400 hover:text-white hover:bg-slate-850'
+              }`}
+              title="Access Real Device GPS or Switch Highway Corridor"
+            >
+              <MapPin className="w-3.5 h-3.5 text-cyan-400" />
+              <span className="hidden sm:inline text-[11px] font-medium">
+                {hostVehicle.dataSource === 'GPS' ? 'GPS Active' : 'Location'}
+              </span>
+            </button>
+          )}
 
           {/* Quick Slider Drawer Toggle */}
           <button
@@ -354,17 +642,90 @@ export const GoogleHighwayMap: React.FC<GoogleHighwayMapProps> = ({
           <div>
             <div className="flex justify-between text-[11px] mb-1">
               <span className="text-slate-400">Radar Target Radius:</span>
-              <span className="font-mono font-bold text-cyan-400">{settings.targetRadiusMeters} meters</span>
+              <span className="font-mono font-bold text-cyan-400">
+                {settings.targetRadiusMeters >= 1000
+                  ? `${(settings.targetRadiusMeters / 1000).toFixed(1)} km (${settings.targetRadiusMeters}m)`
+                  : `${settings.targetRadiusMeters} meters`}
+              </span>
             </div>
             <input
               type="range"
-              min="50"
-              max="300"
-              step="10"
+              min="100"
+              max="2000"
+              step="50"
               value={settings.targetRadiusMeters}
               onChange={(e) => onUpdateSettings({ targetRadiusMeters: Number(e.target.value) })}
               className="w-full accent-cyan-500 h-1.5 bg-slate-800 rounded-lg cursor-pointer"
             />
+            {/* Quick preset buttons */}
+            <div className="flex gap-1 mt-1.5">
+              {[250, 500, 1000, 1500, 2000].map((r) => (
+                <button
+                  key={r}
+                  onClick={() => onUpdateSettings({ targetRadiusMeters: r })}
+                  className={`px-1 py-0.5 rounded text-[10px] font-mono flex-1 text-center transition-colors ${
+                    settings.targetRadiusMeters === r
+                      ? 'bg-cyan-500 text-slate-950 font-bold shadow-sm'
+                      : 'bg-slate-900 hover:bg-slate-850 text-slate-400 border border-slate-800'
+                  }`}
+                >
+                  {r >= 1000 ? `${r / 1000}km` : `${r}m`}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Dynamic Speed Traces Toggle */}
+          <div className="flex items-center justify-between pt-1 border-t border-slate-800/80 text-[11px]">
+            <span className="text-slate-400 flex items-center gap-1.5">
+              <Activity className="w-3 h-3 text-cyan-400" />
+              Dynamic Speed Traces:
+            </span>
+            <button
+              onClick={() => onUpdateSettings({ showTraces: !settings.showTraces })}
+              className={`px-2 py-0.5 rounded text-[10px] font-semibold border transition-colors ${
+                settings.showTraces
+                  ? 'bg-cyan-950 text-cyan-300 border-cyan-500/80'
+                  : 'bg-slate-900 text-slate-400 border-slate-700'
+              }`}
+            >
+              {settings.showTraces ? 'ENABLED' : 'MUTED'}
+            </button>
+          </div>
+
+          {/* Highway Road-Lock Toggle */}
+          <div className="flex items-center justify-between pt-1 border-t border-slate-800/80 text-[11px]">
+            <span className="text-slate-300 flex items-center gap-1.5 font-medium">
+              <Navigation className="w-3 h-3 text-emerald-400" />
+              Highway Road-Lock:
+            </span>
+            <button
+              onClick={() => onUpdateSettings({ roadLockEnabled: !settings.roadLockEnabled })}
+              className={`px-2 py-0.5 rounded text-[10px] font-bold border transition-colors ${
+                settings.roadLockEnabled
+                  ? 'bg-emerald-950 text-emerald-300 border-emerald-500/80 shadow-sm'
+                  : 'bg-slate-900 text-slate-400 border-slate-700'
+              }`}
+            >
+              {settings.roadLockEnabled ? 'LOCKED ON ROAD' : 'FREE VECTOR'}
+            </button>
+          </div>
+
+          {/* Road Corridor Guide Line Toggle */}
+          <div className="flex items-center justify-between pt-1 border-t border-slate-800/80 text-[11px]">
+            <span className="text-slate-400 flex items-center gap-1.5">
+              Road Centerline Guide:
+            </span>
+            <button
+              onClick={() => onUpdateSettings({ showRoadGuide: !settings.showRoadGuide })}
+              className={`px-2 py-0.5 rounded text-[10px] font-semibold border transition-colors ${
+                settings.showRoadGuide
+                  ? 'bg-cyan-950 text-cyan-300 border-cyan-500/80'
+                  : 'bg-slate-900 text-slate-400 border-slate-700'
+              }`}
+            >
+              {settings.showRoadGuide ? 'VISIBLE' : 'HIDDEN'}
+            </button>
           </div>
 
           <div className="flex items-center justify-between pt-1 border-t border-slate-800/80 text-[11px]">

@@ -1,6 +1,7 @@
 /**
  * Real-time Highway Vehicle Simulator and Safety Evaluation Engine
  * Continuous Non-stop High-Frequency Kinematics Tracking (No 1-second pause/delay)
+ * Strictly keeps all vehicles on authentic highway road geometries, curves, and lanes.
  */
 
 import {
@@ -8,6 +9,7 @@ import {
   HostVehicleState,
   SystemSettings,
   SafetyAlert,
+  BreadcrumbPoint,
 } from '../types/vehicle';
 import {
   calculateHaversineDistance,
@@ -22,8 +24,16 @@ import {
 } from './scenarios';
 import { soundManager } from '../utils/audio';
 import { appendTelemetryLog, saveCachedVehicles } from '../utils/storage';
+import {
+  RoadCorridor,
+  RoadWaypoint,
+  getRoadCorridorForPreset,
+  createDynamicRoadCorridor,
+  HIGHWAY_ROAD_WAYPOINTS,
+} from '../utils/roadGeometry';
+import { REAL_WORLD_PRESETS } from '../utils/realLocations';
 
-// Anchor coordinate for realistic highway track (NH-44 Hyderabad-Bengaluru highway corridor)
+// Anchor coordinate for realistic highway track (Hyderabad Outer Ring Road)
 export const DEFAULT_HIGHWAY_ORIGIN = {
   latitude: 17.4485,
   longitude: 78.3742,
@@ -36,6 +46,17 @@ interface DynamicVehicleState extends SimulatedVehicleInitialState {
   currentLaneOffsetMeters: number;
   isFrozen: boolean;
   lastBeaconTimestamp: number;
+  trail: BreadcrumbPoint[];
+  lastTrailRecordMs: number;
+}
+
+export interface SimulatorPayload {
+  vehicles: Vehicle[];
+  host: HostVehicleState;
+  alerts: SafetyAlert[];
+  roadPolyline: RoadWaypoint[];
+  roadName: string;
+  totalRoadLengthMeters: number;
 }
 
 export class HighwaySafetySimulator {
@@ -46,34 +67,51 @@ export class HighwaySafetySimulator {
   private lastStorageSaveTime: number = 0;
   private elapsedSeconds = 0;
   private settings: SystemSettings;
-  
+
+  // Road Alignment & Snapping Engine
+  private roadCorridor: RoadCorridor;
+  private hostAlongRoadDistance: number = 0;
+
   private hostVehicle: HostVehicleState;
+  private hostTrail: BreadcrumbPoint[] = [];
+  private lastHostTrailRecordMs: number = 0;
   private vehicles: Map<string, Vehicle> = new Map();
   private vehicleStates: Map<string, DynamicVehicleState> = new Map();
   private alerts: SafetyAlert[] = [];
-  private listeners: Set<(state: { vehicles: Vehicle[]; host: HostVehicleState; alerts: SafetyAlert[] }) => void> = new Set();
+  private listeners: Set<(state: SimulatorPayload) => void> = new Set();
 
   constructor(initialSettings: SystemSettings) {
     this.settings = { ...initialSettings };
+
+    // Initialize with authentic Hyderabad ORR Highway Corridor
+    this.roadCorridor = getRoadCorridorForPreset('hyderabad-orr');
+    const snapped = this.roadCorridor.findNearestRoadDistance(
+      DEFAULT_HIGHWAY_ORIGIN.latitude,
+      DEFAULT_HIGHWAY_ORIGIN.longitude
+    );
+    this.hostAlongRoadDistance = snapped.distanceMeters;
+    const initialPos = this.roadCorridor.getPositionAtDistance(this.hostAlongRoadDistance, 0);
+
     this.hostVehicle = {
       id: 'HOST-VEHICLE-01',
       name: 'Host Vehicle (My Vehicle)',
       category: 'car',
-      latitude: DEFAULT_HIGHWAY_ORIGIN.latitude,
-      longitude: DEFAULT_HIGHWAY_ORIGIN.longitude,
+      latitude: initialPos.latitude,
+      longitude: initialPos.longitude,
       speedKmh: 75,
-      heading: DEFAULT_HIGHWAY_ORIGIN.heading,
+      heading: initialPos.heading,
       accuracyMeters: 2.5,
       timestamp: Date.now(),
       dataSource: 'SIMULATED',
       isGpsActive: false,
       gpsError: null,
+      locationName: 'Hyderabad Outer Ring Road (ORR)',
     };
 
     this.initScenario(this.activeScenarioId);
   }
 
-  public subscribe(callback: (state: { vehicles: Vehicle[]; host: HostVehicleState; alerts: SafetyAlert[] }) => void): () => void {
+  public subscribe(callback: (state: SimulatorPayload) => void): () => void {
     this.listeners.add(callback);
     this.notify();
     return () => this.listeners.delete(callback);
@@ -81,10 +119,13 @@ export class HighwaySafetySimulator {
 
   private notify() {
     const vehicleArray = Array.from(this.vehicles.values());
-    const payload = {
+    const payload: SimulatorPayload = {
       vehicles: vehicleArray,
       host: { ...this.hostVehicle },
       alerts: [...this.alerts],
+      roadPolyline: this.roadCorridor.getPolyline(),
+      roadName: this.roadCorridor.name,
+      totalRoadLengthMeters: this.roadCorridor.totalLengthMeters,
     };
     this.listeners.forEach((cb) => cb(payload));
   }
@@ -93,10 +134,15 @@ export class HighwaySafetySimulator {
     return { ...this.settings };
   }
 
+  public getRoadCorridor(): RoadCorridor {
+    return this.roadCorridor;
+  }
+
   public updateSettings(newSettings: Partial<SystemSettings>) {
     this.settings = { ...this.settings, ...newSettings };
     soundManager.setMuted(!this.settings.soundEnabled);
     this.recalculateAllVehicles();
+    this.recomputePositions();
     this.notify();
   }
 
@@ -106,19 +152,98 @@ export class HighwaySafetySimulator {
     speedKmh: number | null;
     heading: number | null;
     accuracyMeters: number | null;
+    locationName?: string;
   }) {
+    // If real GPS is outside current corridor (> 800m cross track error), build dynamic road corridor
+    const snap = this.roadCorridor.findNearestRoadDistance(coords.latitude, coords.longitude);
+    if (snap.crossTrackErrorMeters > 800) {
+      this.roadCorridor = createDynamicRoadCorridor(
+        coords.latitude,
+        coords.longitude,
+        coords.heading ?? 45,
+        coords.locationName || 'Live GPS Highway Corridor'
+      );
+      this.hostAlongRoadDistance = 5000; // middle of 10 km corridor
+    } else {
+      this.hostAlongRoadDistance = snap.distanceMeters;
+    }
+
+    const hostLat = this.settings.roadLockEnabled ? snap.snappedLat : coords.latitude;
+    const hostLng = this.settings.roadLockEnabled ? snap.snappedLng : coords.longitude;
+    const hostHeading = coords.heading ?? snap.heading;
+
     this.hostVehicle = {
       ...this.hostVehicle,
-      latitude: coords.latitude,
-      longitude: coords.longitude,
+      latitude: hostLat,
+      longitude: hostLng,
       speedKmh: coords.speedKmh,
-      heading: coords.heading ?? this.hostVehicle.heading,
+      heading: hostHeading,
       accuracyMeters: coords.accuracyMeters,
+      locationName: coords.locationName ?? this.hostVehicle.locationName,
       timestamp: Date.now(),
       dataSource: 'GPS',
       isGpsActive: true,
       gpsError: null,
     };
+    this.recomputePositions();
+    this.recalculateAllVehicles();
+    this.notify();
+  }
+
+  public setHostLocation(
+    latitude: number,
+    longitude: number,
+    heading = 45,
+    locationName?: string,
+    isGps = false
+  ) {
+    // Check if this location matches any preset corridor
+    const matchingPreset = REAL_WORLD_PRESETS.find(
+      (p) =>
+        (locationName && p.name.toLowerCase().includes(locationName.toLowerCase())) ||
+        (Math.abs(p.latitude - latitude) < 0.08 && Math.abs(p.longitude - longitude) < 0.08)
+    );
+
+    if (matchingPreset && HIGHWAY_ROAD_WAYPOINTS[matchingPreset.id]) {
+      this.roadCorridor = getRoadCorridorForPreset(matchingPreset.id);
+    } else {
+      this.roadCorridor = createDynamicRoadCorridor(
+        latitude,
+        longitude,
+        heading,
+        locationName || 'Highway Road Corridor'
+      );
+    }
+
+    const snap = this.roadCorridor.findNearestRoadDistance(latitude, longitude);
+    this.hostAlongRoadDistance = snap.distanceMeters;
+
+    const initialPos = this.settings.roadLockEnabled
+      ? this.roadCorridor.getPositionAtDistance(this.hostAlongRoadDistance, 0)
+      : { latitude, longitude, heading };
+
+    this.hostVehicle = {
+      ...this.hostVehicle,
+      latitude: initialPos.latitude,
+      longitude: initialPos.longitude,
+      heading: initialPos.heading,
+      locationName: locationName || matchingPreset?.name || this.roadCorridor.name,
+      timestamp: Date.now(),
+      dataSource: isGps ? 'GPS' : 'SIMULATED',
+      isGpsActive: isGps,
+      gpsError: null,
+    };
+
+    this.hostTrail = [
+      {
+        latitude: initialPos.latitude,
+        longitude: initialPos.longitude,
+        speedKmh: this.hostVehicle.speedKmh,
+        timestamp: Date.now(),
+      },
+    ];
+    this.hostVehicle.trail = [...this.hostTrail];
+    this.recomputePositions();
     this.recalculateAllVehicles();
     this.notify();
   }
@@ -156,6 +281,17 @@ export class HighwaySafetySimulator {
     const blueprints = SCENARIO_VEHICLE_BLUEPRINTS[scenarioId] || SCENARIO_VEHICLE_BLUEPRINTS['normal-traffic'];
 
     const now = Date.now();
+    this.hostTrail = [
+      {
+        latitude: this.hostVehicle.latitude,
+        longitude: this.hostVehicle.longitude,
+        speedKmh: this.hostVehicle.speedKmh,
+        timestamp: now,
+      },
+    ];
+    this.lastHostTrailRecordMs = now;
+    this.hostVehicle.trail = [...this.hostTrail];
+
     blueprints.forEach((bp) => {
       this.vehicleStates.set(bp.id, {
         ...bp,
@@ -164,6 +300,8 @@ export class HighwaySafetySimulator {
         currentLaneOffsetMeters: bp.laneOffsetMeters,
         isFrozen: false,
         lastBeaconTimestamp: now,
+        trail: [],
+        lastTrailRecordMs: 0,
       });
     });
 
@@ -207,7 +345,6 @@ export class HighwaySafetySimulator {
     if (!this.isRunning) return;
 
     const now = performance.now();
-    // Delta time in seconds, clamped to avoid huge jumps if tab was backgrounded
     const rawDt = (now - this.lastFrameTime) / 1000;
     const dt = Math.min(Math.max(rawDt, 0.001), 0.1) * (this.settings.simulationMultiplier || 1);
     this.lastFrameTime = now;
@@ -221,23 +358,50 @@ export class HighwaySafetySimulator {
     this.elapsedSeconds += dtSeconds;
     const nowMs = Date.now();
 
-    // 1. Advance Host Vehicle smoothly forward along the highway
+    // 1. Advance Host Vehicle smoothly forward along the authentic highway road
     if (!this.hostVehicle.isGpsActive && this.hostVehicle.speedKmh) {
-      const hostDist = (this.hostVehicle.speedKmh / 3.6) * dtSeconds;
-      const newHostPos = projectCoordinates(
-        this.hostVehicle.latitude,
-        this.hostVehicle.longitude,
-        hostDist,
-        this.hostVehicle.heading ?? DEFAULT_HIGHWAY_ORIGIN.heading
-      );
-      this.hostVehicle.latitude = newHostPos.latitude;
-      this.hostVehicle.longitude = newHostPos.longitude;
+      const hostSpeed = this.hostVehicle.speedKmh;
+      const hostDist = (hostSpeed / 3.6) * dtSeconds;
+
+      if (this.settings.roadLockEnabled) {
+        // Strictly follow road centerline & authentic highway curvature
+        this.hostAlongRoadDistance += hostDist;
+        const roadPos = this.roadCorridor.getPositionAtDistance(this.hostAlongRoadDistance, 0);
+        this.hostVehicle.latitude = roadPos.latitude;
+        this.hostVehicle.longitude = roadPos.longitude;
+        this.hostVehicle.heading = roadPos.heading;
+      } else {
+        // Fallback straight vector
+        const newHostPos = projectCoordinates(
+          this.hostVehicle.latitude,
+          this.hostVehicle.longitude,
+          hostDist,
+          this.hostVehicle.heading ?? DEFAULT_HIGHWAY_ORIGIN.heading
+        );
+        this.hostVehicle.latitude = newHostPos.latitude;
+        this.hostVehicle.longitude = newHostPos.longitude;
+      }
       this.hostVehicle.timestamp = nowMs;
+    }
+
+    // Record host vehicle breadcrumb trail every 400ms
+    if (nowMs - this.lastHostTrailRecordMs > 400) {
+      this.lastHostTrailRecordMs = nowMs;
+      this.hostTrail.push({
+        latitude: this.hostVehicle.latitude,
+        longitude: this.hostVehicle.longitude,
+        speedKmh: this.hostVehicle.speedKmh,
+        timestamp: nowMs,
+      });
+      if (this.hostTrail.length > 30) {
+        this.hostTrail.shift();
+      }
+      this.hostVehicle.trail = [...this.hostTrail];
     }
 
     const hostSpeed = this.hostVehicle.speedKmh ?? 75;
 
-    // 2. Advance Each Simulated Vehicle Continuously
+    // 2. Advance Each Simulated Vehicle Continuously Across 1 km Corridor
     this.vehicleStates.forEach((state) => {
       // Check for packet drop / frozen communication in stale data scenario
       if (
@@ -261,12 +425,6 @@ export class HighwaySafetySimulator {
       if (!state.isFrozen) {
         state.lastBeaconTimestamp = nowMs;
 
-        // Kinematics:
-        // For same direction (heading offset 0):
-        // Relative speed = targetSpeed - hostSpeed
-        // Change in relative distance = (relativeSpeed / 3.6) * dt
-        // For oncoming (heading offset 180):
-        // Approaching at (targetSpeed + hostSpeed)
         const isOpposite = state.headingOffsetDegrees === 180;
         const relativeSpeedKmh = isOpposite
           ? -(state.currentSpeedKmh + hostSpeed) // Rapidly closing
@@ -275,30 +433,28 @@ export class HighwaySafetySimulator {
         state.currentLongitudinalOffsetMeters += (relativeSpeedKmh / 3.6) * dtSeconds;
 
         // Infinite Continuous Highway Corridor Wrapping:
-        // Vehicles must never stop or disappear permanently!
-        // When an oncoming vehicle passes behind the host (> 60m behind), wrap to oncoming horizon (+200m ahead).
         if (isOpposite) {
-          if (state.currentLongitudinalOffsetMeters < -60) {
-            state.currentLongitudinalOffsetMeters = 220; // Re-enter from oncoming horizon
+          if (state.currentLongitudinalOffsetMeters < -120) {
+            state.currentLongitudinalOffsetMeters = 1150; // Re-enter from oncoming 1.15 km horizon
+            state.trail = [];
           }
         } else {
-          // For same direction vehicles:
-          // If a speeding vehicle goes far ahead (> 260m), reset smoothly to -80m to overtake again
-          if (state.currentLongitudinalOffsetMeters > 260) {
-            state.currentLongitudinalOffsetMeters = -90;
+          if (state.currentLongitudinalOffsetMeters > 1300) {
+            state.currentLongitudinalOffsetMeters = -1050;
+            state.trail = [];
           }
-          // If a slower truck falls far behind (< -140m), respawn ahead (+150m) to cruise past again
-          if (state.currentLongitudinalOffsetMeters < -140) {
-            state.currentLongitudinalOffsetMeters = 160;
+          if (state.currentLongitudinalOffsetMeters < -1250) {
+            state.currentLongitudinalOffsetMeters = 1180;
+            state.trail = [];
           }
         }
       }
     });
 
-    // 3. Recompute geographic coordinates and collision assessments
+    // 3. Recompute geographic coordinates strictly aligned with road pavement
     this.recomputePositions();
 
-    // 4. Periodically cache to localStorage (throttled to every 2 seconds to keep 60 FPS buttery smooth)
+    // 4. Periodically cache to localStorage (throttled to every 2 seconds)
     if (nowMs - this.lastStorageSaveTime > 2000) {
       this.lastStorageSaveTime = nowMs;
       saveCachedVehicles(Array.from(this.vehicles.values()));
@@ -306,7 +462,7 @@ export class HighwaySafetySimulator {
 
     // 5. Broadcast to React UI
     this.notify();
-  }
+  };
 
   private recomputePositions() {
     const hostLat = this.hostVehicle.latitude;
@@ -336,31 +492,54 @@ export class HighwaySafetySimulator {
         return;
       }
 
-      const relativeDistanceMeters = state.currentLongitudinalOffsetMeters;
-      const absoluteHeading = (hostHeading + state.headingOffsetDegrees) % 360;
+      let finalLat: number;
+      let finalLon: number;
+      let absoluteHeading: number;
 
-      // Project longitudinal distance along highway heading
-      const longitudinalPoint = projectCoordinates(
-        hostLat,
-        hostLon,
-        Math.abs(relativeDistanceMeters),
-        relativeDistanceMeters >= 0 ? hostHeading : (hostHeading + 180) % 360
-      );
+      const isOpposite = state.headingOffsetDegrees === 180;
 
-      // Project lateral lane offset perpendicular to highway (bearing + 90 deg)
-      const perpendicularHeading = (hostHeading + 90) % 360;
-      const finalPosition = projectCoordinates(
-        longitudinalPoint.latitude,
-        longitudinalPoint.longitude,
-        Math.abs(state.currentLaneOffsetMeters),
-        state.currentLaneOffsetMeters >= 0 ? perpendicularHeading : (perpendicularHeading + 180) % 360
-      );
+      if (this.settings.roadLockEnabled) {
+        // STRICT ROAD-LOCKED KINEMATICS:
+        // Vehicles follow the authentic highway centerline and curved pavement
+        const targetRoadDist = this.hostAlongRoadDistance + state.currentLongitudinalOffsetMeters;
+
+        // Oncoming traffic travels on the opposite carriageway separated by the median barrier (-10m lateral shift)
+        const effectiveLaneOffset = isOpposite
+          ? -(Math.abs(state.currentLaneOffsetMeters) + 7.5)
+          : state.currentLaneOffsetMeters;
+
+        const roadPos = this.roadCorridor.getPositionAtDistance(targetRoadDist, effectiveLaneOffset);
+        finalLat = roadPos.latitude;
+        finalLon = roadPos.longitude;
+        absoluteHeading = isOpposite ? (roadPos.heading + 180) % 360 : roadPos.heading;
+      } else {
+        // Fallback linear projection
+        const relativeDistanceMeters = state.currentLongitudinalOffsetMeters;
+        absoluteHeading = (hostHeading + state.headingOffsetDegrees) % 360;
+
+        const longitudinalPoint = projectCoordinates(
+          hostLat,
+          hostLon,
+          Math.abs(relativeDistanceMeters),
+          relativeDistanceMeters >= 0 ? hostHeading : (hostHeading + 180) % 360
+        );
+
+        const perpendicularHeading = (hostHeading + 90) % 360;
+        const finalPos = projectCoordinates(
+          longitudinalPoint.latitude,
+          longitudinalPoint.longitude,
+          Math.abs(state.currentLaneOffsetMeters),
+          state.currentLaneOffsetMeters >= 0 ? perpendicularHeading : (perpendicularHeading + 180) % 360
+        );
+        finalLat = finalPos.latitude;
+        finalLon = finalPos.longitude;
+      }
 
       const distanceToHost = calculateHaversineDistance(
         hostLat,
         hostLon,
-        finalPosition.latitude,
-        finalPosition.longitude
+        finalLat,
+        finalLon
       );
 
       // Speed limit status logic (Red / Green / Grey)
@@ -385,16 +564,40 @@ export class HighwaySafetySimulator {
         targetHeading: absoluteHeading,
         hostLat,
         hostLon,
-        targetLat: finalPosition.latitude,
-        targetLon: finalPosition.longitude,
+        targetLat: finalLat,
+        targetLon: finalLon,
       });
+
+      // Maintain vehicle trajectory & speed trace trail
+      if (!state.isFrozen) {
+        if (now - state.lastTrailRecordMs > 400) {
+          state.lastTrailRecordMs = now;
+          state.trail.push({
+            latitude: finalLat,
+            longitude: finalLon,
+            speedKmh: Math.round(state.currentSpeedKmh),
+            timestamp: now,
+          });
+          if (state.trail.length > 25) {
+            state.trail.shift();
+          }
+        }
+      }
+
+      const laneDescription = isOpposite
+        ? 'Opposite Carriageway (Oncoming)'
+        : state.currentLaneOffsetMeters < -1.5
+        ? 'Fast / Overtake Lane'
+        : state.currentLaneOffsetMeters > 1.5
+        ? 'Slow / Freight Lane'
+        : 'Center Cruising Lane';
 
       const vehicleObj: Vehicle = {
         id: state.id,
         name: state.name,
         category: state.category,
-        latitude: finalPosition.latitude,
-        longitude: finalPosition.longitude,
+        latitude: finalLat,
+        longitude: finalLon,
         speedKmh: Math.round(state.currentSpeedKmh),
         heading: absoluteHeading,
         timestamp: now,
@@ -409,7 +612,8 @@ export class HighwaySafetySimulator {
         timeToCollisionSeconds: collisionEval.timeToCollisionSeconds,
         collisionRiskLevel: collisionEval.riskLevel,
         collisionRiskReason: collisionEval.reason,
-        notes: state.currentLaneOffsetMeters < 0 ? 'Left/Overtake corridor' : 'Right/Cruise corridor',
+        notes: laneDescription,
+        trail: [...state.trail],
       };
 
       this.vehicles.set(id, vehicleObj);

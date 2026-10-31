@@ -18,6 +18,7 @@ import {
   Database,
   ShieldCheck,
   CheckCircle2,
+  Navigation,
 } from 'lucide-react';
 
 interface FeaturesGuideModalProps {
@@ -36,18 +37,18 @@ export const FeaturesGuideModal: React.FC<FeaturesGuideModalProps> = ({
   const features = [
     {
       id: 'target-horizon',
-      title: '1. 100-Meter Target Detection Radius',
-      category: 'Proximity Filtering',
+      title: '1. 1 km (1000m) Target Detection & Speed Tracing Horizon',
+      category: 'Proximity Filtering & Radar',
       icon: <Radio className="w-4 h-4 text-cyan-400" />,
-      badge: 'Safety Zone',
+      badge: '1.0 km Safety Zone',
       purpose:
-        'Prevents cognitive overload by prioritizing vehicles within immediate braking and collision hazard distance (default 100m).',
+        'Traces all nearby and oncoming vehicles and their speeds from up to 1 kilometer away (1000 meters) from the host vehicle’s position.',
       whatIsItUsedFor:
-        'In highway driving at 80–120 km/h, hundreds of vehicles may be on the road corridor. Drivers cannot process distant traffic; they need laser-focus on vehicles within 50–100 meters. The system dynamically highlights threats inside this horizon and fades out background vehicles.',
+        'In highway driving at 80–120 km/h, spotting speeding violators or oncoming vehicles 100 meters away gives only 2-3 seconds of reaction time. By expanding radar detection and dynamic speed tracing up to 1 kilometer (1000m) ahead and behind, drivers and dispatchers have early situational awareness to anticipate traffic maneuvers, speed violations, and oncoming hazards long before they become critical.',
       howItWorks:
-        'Uses spherical Haversine geodesic distance math: d = 2R · arcsin(√(sin²(Δφ/2) + cos φ₁ · cos φ₂ · sin²(Δλ/2))). If d ≤ configured target radius, the vehicle is enclosed in the radar horizon ring and highlighted in the priority cohort.',
+        'Uses spherical Haversine geodesic distance math: d = 2R · arcsin(√(sin²(Δφ/2) + cos φ₁ · cos φ₂ · sin²(Δλ/2))). All vehicles within 1000m (1 km) are tracked continuously at 60 FPS, and their historical positions are rendered as color-coded trajectory speed traces (green for compliant, red for speeding, amber for oncoming, cyan for host).',
       visualIndicator:
-        'Pulsing cyan circular radar horizon on both Google Satellite and Leaflet maps, with active vehicle count in HUD.',
+        'Geographical 1000m cyan radar circle on Google Satellite and Leaflet maps, with concentric 250m/500m/750m distance guide rings, speed traces, and exact distance badges on markers.',
     },
     {
       id: 'speed-violation',
@@ -156,18 +157,18 @@ export const FeaturesGuideModal: React.FC<FeaturesGuideModalProps> = ({
     },
     {
       id: 'live-gps',
-      title: '9. Live Device GPS vs Simulator Mode',
-      category: 'Position Sensing',
-      icon: <MapPin className="w-4 h-4 text-purple-400" />,
-      badge: 'Zero False Speeds',
+      title: '9. Real-World Location Access & Hardware GNSS Radar',
+      category: 'Position Sensing & Geocoding',
+      icon: <MapPin className="w-4 h-4 text-emerald-400" />,
+      badge: 'Real-World GPS & Reverse Geocoding',
       purpose:
-        'Collects authentic hardware coordinates from browser Geolocation API without ever fabricating false live speeds.',
+        'Locks the 1 km radar horizon and surrounding vehicle tracking onto your authentic physical position via browser Geolocation API with live reverse geocoding.',
       whatIsItUsedFor:
-        'Allows testing the app inside a real moving vehicle using your device’s internal GNSS chip, while supporting simulated highway mode for deterministic desktop presentations.',
+        'Turns the prototype into an authentic real-world road tracker. Whether driving on a real highway, commuting on a city corridor, or testing at your desk, the system centers Google Satellite imagery directly on your coordinates, computes physical velocity and compass heading, and performs reverse geocoding to display your actual street and city.',
       howItWorks:
-        'Calls navigator.geolocation.watchPosition with enableHighAccuracy: true. If speed is null or stationary, it displays "Unavailable (Stationary)" rather than guessing.',
+        'Requests navigator.geolocation with enableHighAccuracy: true. Extracts device coordinates, altitude, and accuracy (±X meters). If raw velocity or heading is null, it computes them from successive GNSS fixes (haversine displacement over dt seconds). Automatically calls OpenStreetMap reverse geocoding to resolve locality names, while supporting 1-click global highway presets (Hyderabad ORR, Mumbai-Pune, Bengaluru NICE, Delhi-Meerut, US-101, German Autobahn).',
       visualIndicator:
-        '"Acquire Live Browser GPS" / "Switch to Simulated Highway" buttons with live latitude, longitude, and accuracy readouts.',
+        '"Real Location" launcher in header, pulsing green GPS locked badge in the HUD, reverse-geocoded place card, and full-screen RealLocationModal with one-click teleport presets.',
     },
     {
       id: 'deterministic-scenarios',
@@ -198,6 +199,21 @@ export const FeaturesGuideModal: React.FC<FeaturesGuideModalProps> = ({
         'Maintains an indexed event ring-buffer in localStorage and provides one-click CSV and JSON data export anchors.',
       visualIndicator:
         '"Offline Telemetry Logs" modal with downloadable CSV and JSON log reports and timestamps.',
+    },
+    {
+      id: 'road-lock',
+      title: '12. Highway Road-Lock & Lane Geometry Kinematics',
+      category: 'Road-Snapping & Corridor Adherence',
+      icon: <Navigation className="w-4 h-4 text-emerald-400" />,
+      badge: '100% on Road Lanes',
+      purpose:
+        'Keeps the Host Vehicle and all surrounding traffic strictly on authentic highway pavement and lane centerlines, eliminating off-road kinematic drift.',
+      whatIsItUsedFor:
+        'In linear kinematic simulations, vehicles moving along a fixed bearing eventually drift into adjacent fields, water, or terrain as the highway curves. Highway Road-Lock snaps and guides vehicles along authentic high-resolution road polylines (Hyderabad ORR, Mumbai-Pune Expressway, Bengaluru NICE, Delhi-Meerut, US-101, German Autobahn) with lane offsets for fast/overtake lanes, center cruising lanes, slow freight lanes, and oncoming carriageways.',
+      howItWorks:
+        'Precomputes arc-length distance s and segment tangent bearings along high-density road geometry. For every time step dt, s_host += v * dt. Host coordinates are interpolated along the road curve. Remote vehicles are positioned at s = s_host + longitudinalOffset with perpendicular lateral offset d for lane separation and median barriers. Oncoming vehicles travel on the opposite carriageway facing opposite direction along the exact highway curvature.',
+      visualIndicator:
+        'Glowing cyan road corridor centerline overlay, "🛣️ Road-Lock: ON" status badge in HUD, and interactive toggle in settings drawer.',
     },
   ];
 

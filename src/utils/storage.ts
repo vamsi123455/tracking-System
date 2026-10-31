@@ -9,20 +9,32 @@ const RECENT_VEHICLES_KEY = 'highway_safety_cached_vehicles_v1';
 const OFFLINE_EVENT_LOG_KEY = 'highway_safety_event_log_v1';
 
 export const DEFAULT_SETTINGS: SystemSettings = {
-  targetRadiusMeters: 100,
+  targetRadiusMeters: 1000, // 1 km (1000 meters) default detection & tracing horizon
   speedLimitKmh: 80,
   speedThresholdKmh: 3,
   staleThresholdSeconds: 5,
   soundEnabled: true,
   simulationMultiplier: 1,
   isOfflineSimulated: false,
+  showTraces: true,
+  roadLockEnabled: true,
+  showRoadGuide: true,
 };
 
 export function loadStoredSettings(): SystemSettings {
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
     if (!raw) return DEFAULT_SETTINGS;
-    return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+    const parsed = JSON.parse(raw);
+    return {
+      ...DEFAULT_SETTINGS,
+      ...parsed,
+      // If user had previous 100m cached setting, adapt to requested 1km default
+      targetRadiusMeters: parsed.targetRadiusMeters && parsed.targetRadiusMeters >= 500 ? parsed.targetRadiusMeters : 1000,
+      showTraces: parsed.showTraces !== undefined ? parsed.showTraces : true,
+      roadLockEnabled: parsed.roadLockEnabled !== undefined ? parsed.roadLockEnabled : true,
+      showRoadGuide: parsed.showRoadGuide !== undefined ? parsed.showRoadGuide : true,
+    };
   } catch {
     return DEFAULT_SETTINGS;
   }

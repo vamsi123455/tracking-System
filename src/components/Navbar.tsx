@@ -1,21 +1,25 @@
 /**
  * Sleek, Minimalist Top Navigation Bar
  * Conforms to Top Bar Contract: [Brand wordmark] — [Nav links] — [Map Engine & Status Action]
+ * with Real-World GPS Location launcher.
  */
 
 import React from 'react';
-import { Shield, Radio, FileText, Database, Layers } from 'lucide-react';
+import { Shield, Radio, FileText, Database, MapPin, Loader2 } from 'lucide-react';
 
 interface NavbarProps {
   onOpenArchitecture: () => void;
   onOpenLogs: () => void;
   onOpenDocs: () => void;
   onOpenFeaturesGuide: () => void;
+  onOpenLocationModal: () => void;
   activeTab: string;
   setActiveTab: (tab: string) => void;
   isSimulatedOffline: boolean;
   mapEngine: 'google' | 'leaflet';
   setMapEngine: (engine: 'google' | 'leaflet') => void;
+  gpsStatus: 'IDLE' | 'REQUESTING' | 'ACTIVE' | 'DENIED' | 'UNAVAILABLE';
+  locationName?: string;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -23,14 +27,17 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenLogs,
   onOpenDocs,
   onOpenFeaturesGuide,
+  onOpenLocationModal,
   activeTab,
   setActiveTab,
   isSimulatedOffline,
   mapEngine,
   setMapEngine,
+  gpsStatus,
+  locationName,
 }) => {
   return (
-    <header className="h-14 px-5 bg-slate-950/90 backdrop-blur-md border-b border-slate-800/80 flex items-center justify-between gap-6 shrink-0 sticky top-0 z-40">
+    <header className="h-14 px-5 bg-slate-950/90 backdrop-blur-md border-b border-slate-800/80 flex items-center justify-between gap-4 shrink-0 sticky top-0 z-40">
       {/* Zone 1: Clean Brand Wordmark */}
       <div className="flex items-center gap-2.5 shrink-0">
         <div className="w-8 h-8 rounded-lg bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center text-cyan-400">
@@ -47,7 +54,7 @@ export const Navbar: React.FC<NavbarProps> = ({
       </div>
 
       {/* Zone 2: Single-line Clean Nav Links */}
-      <nav className="hidden md:flex items-center gap-6 text-xs font-medium text-slate-300">
+      <nav className="hidden md:flex items-center gap-5 text-xs font-medium text-slate-300">
         <button
           onClick={() => setActiveTab('monitor')}
           className={`whitespace-nowrap transition-colors hover:text-white pb-0.5 ${
@@ -89,17 +96,34 @@ export const Navbar: React.FC<NavbarProps> = ({
           <FileText className="w-3.5 h-3.5 text-slate-500" />
           API &amp; Setup
         </button>
-        <button
-          onClick={onOpenFeaturesGuide}
-          className="whitespace-nowrap transition-colors text-cyan-400 hover:text-cyan-300 font-semibold flex items-center gap-1.5"
-        >
-          <Shield className="w-3.5 h-3.5 text-cyan-400" />
-          Feature Guide
-        </button>
       </nav>
 
-      {/* Zone 3: Neat Map Engine Selector & Status Indicator */}
-      <div className="flex items-center gap-3 shrink-0">
+      {/* Zone 3: Real Location Launcher, Map Engine & Status */}
+      <div className="flex items-center gap-2.5 shrink-0">
+        {/* Real Location Access Button */}
+        <button
+          onClick={onOpenLocationModal}
+          className={`px-2.5 py-1.5 rounded-lg border text-xs font-semibold flex items-center gap-1.5 transition-all ${
+            gpsStatus === 'ACTIVE'
+              ? 'bg-emerald-950/80 border-emerald-600 text-emerald-300 hover:bg-emerald-900/80 shadow-sm shadow-emerald-500/20'
+              : gpsStatus === 'REQUESTING'
+              ? 'bg-cyan-950/80 border-cyan-600 text-cyan-300'
+              : 'bg-slate-900 border-slate-700 hover:border-cyan-500 text-slate-200'
+          }`}
+          title="Access real device GPS or pick highway corridor"
+        >
+          {gpsStatus === 'ACTIVE' ? (
+            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+          ) : gpsStatus === 'REQUESTING' ? (
+            <Loader2 className="w-3.5 h-3.5 animate-spin text-cyan-400" />
+          ) : (
+            <MapPin className="w-3.5 h-3.5 text-cyan-400" />
+          )}
+          <span className="hidden sm:inline">
+            {gpsStatus === 'ACTIVE' ? 'GPS Active' : 'Real Location'}
+          </span>
+        </button>
+
         {/* Map Engine Segmented Control */}
         <div className="flex items-center p-0.5 bg-slate-900 border border-slate-800 rounded-lg text-[11px]">
           <button
@@ -125,22 +149,22 @@ export const Navbar: React.FC<NavbarProps> = ({
         </div>
 
         {isSimulatedOffline ? (
-          <span className="text-[11px] font-mono text-amber-400 bg-amber-950/60 border border-amber-800/80 px-2.5 py-1 rounded">
-            Offline Cache
+          <span className="text-[11px] font-mono text-amber-400 bg-amber-950/60 border border-amber-800/80 px-2 py-1 rounded">
+            Offline
           </span>
         ) : (
-          <div className="hidden lg:flex items-center gap-1.5 text-[11px] font-mono text-emerald-400 bg-emerald-950/40 border border-emerald-900/60 px-2 py-1 rounded">
+          <div className="hidden xl:flex items-center gap-1.5 text-[11px] font-mono text-emerald-400 bg-emerald-950/40 border border-emerald-900/60 px-2 py-1 rounded">
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-            <span>60 FPS Live</span>
+            <span>60 FPS</span>
           </div>
         )}
 
         <button
           onClick={onOpenFeaturesGuide}
-          className="px-3 py-1.5 text-xs font-semibold text-slate-950 bg-cyan-400 hover:bg-cyan-300 rounded-lg transition-colors whitespace-nowrap flex items-center gap-1.5 shadow-sm shadow-cyan-500/20"
+          className="px-2.5 py-1.5 text-xs font-semibold text-slate-950 bg-cyan-400 hover:bg-cyan-300 rounded-lg transition-colors whitespace-nowrap flex items-center gap-1.5 shadow-sm shadow-cyan-500/20"
         >
           <Shield className="w-3.5 h-3.5 text-slate-950" />
-          Features Guide
+          <span className="hidden sm:inline">Guide</span>
         </button>
       </div>
     </header>

@@ -137,7 +137,9 @@ export const VehicleDetailsModal: React.FC<VehicleDetailsModalProps> = ({
             <div className="p-2.5 flex items-center justify-between">
               <span className="text-slate-400">Separation Distance:</span>
               <span className="font-mono tabular-nums font-bold text-white">
-                {vehicle.distanceMeters} meters
+                {vehicle.distanceMeters >= 1000
+                  ? `${vehicle.distanceMeters} m (${(vehicle.distanceMeters / 1000).toFixed(2)} km)`
+                  : `${vehicle.distanceMeters} meters`}
               </span>
             </div>
 

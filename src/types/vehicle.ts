@@ -14,6 +14,13 @@ export type DataSource = 'SIMULATED' | 'GPS';
 
 export type CollisionRiskLevel = 'NONE' | 'LOW' | 'CAUTION' | 'CRITICAL';
 
+export interface BreadcrumbPoint {
+  latitude: number;
+  longitude: number;
+  speedKmh: number | null;
+  timestamp: number;
+}
+
 export interface Vehicle {
   id: string;
   name: string;
@@ -36,6 +43,7 @@ export interface Vehicle {
   collisionRiskReason?: string;
   lane?: number; // 1 = Left / Fast, 2 = Center, 3 = Right / Slow, -1 = Oncoming
   notes?: string;
+  trail?: BreadcrumbPoint[];
 }
 
 export interface HostVehicleState {
@@ -51,6 +59,9 @@ export interface HostVehicleState {
   dataSource: DataSource;
   isGpsActive: boolean;
   gpsError: string | null;
+  locationName?: string;
+  altitudeMeters?: number | null;
+  trail?: BreadcrumbPoint[];
 }
 
 export interface ScenarioConfig {
@@ -75,11 +86,14 @@ export interface SafetyAlert {
 }
 
 export interface SystemSettings {
-  targetRadiusMeters: number; // e.g. 100m
+  targetRadiusMeters: number; // e.g. 1000m (1 km)
   speedLimitKmh: number; // e.g. 80 km/h
   speedThresholdKmh: number; // e.g. 3 km/h tolerance
   staleThresholdSeconds: number; // e.g. 5 seconds
   soundEnabled: boolean;
   simulationMultiplier: number; // 0.5x, 1x, 2x, 5x
   isOfflineSimulated: boolean;
+  showTraces: boolean; // Dynamic vehicle speed & trajectory traces
+  roadLockEnabled: boolean; // Strictly keep vehicles on road lanes
+  showRoadGuide: boolean; // Display highway corridor & lane guides
 }
