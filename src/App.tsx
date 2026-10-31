@@ -15,6 +15,7 @@ import { VehicleDetailsModal } from './components/VehicleDetailsModal';
 import { ArchitectureModal } from './components/ArchitectureModal';
 import { TelemetryLogsModal } from './components/TelemetryLogsModal';
 import { ApiDocsModal } from './components/ApiDocsModal';
+import { FeaturesGuideModal } from './components/FeaturesGuideModal';
 import { HighwaySafetySimulator } from './simulator/engine';
 import { useGeolocation } from './hooks/useGeolocation';
 import {
@@ -65,6 +66,7 @@ export default function App() {
   const [isArchModalOpen, setIsArchModalOpen] = useState<boolean>(false);
   const [isLogsModalOpen, setIsLogsModalOpen] = useState<boolean>(false);
   const [isDocsModalOpen, setIsDocsModalOpen] = useState<boolean>(false);
+  const [isFeaturesGuideOpen, setIsFeaturesGuideOpen] = useState<boolean>(false);
 
   // Browser Geolocation
   const { gpsData, startWatching, stopWatching } = useGeolocation();
@@ -192,6 +194,7 @@ export default function App() {
         onOpenArchitecture={() => setIsArchModalOpen(true)}
         onOpenLogs={() => setIsLogsModalOpen(true)}
         onOpenDocs={() => setIsDocsModalOpen(true)}
+        onOpenFeaturesGuide={() => setIsFeaturesGuideOpen(true)}
         isSimulatedOffline={settings.isOfflineSimulated}
         mapEngine={mapEngine}
         setMapEngine={setMapEngine}
@@ -378,6 +381,11 @@ export default function App() {
       <ApiDocsModal
         isOpen={isDocsModalOpen}
         onClose={() => setIsDocsModalOpen(false)}
+      />
+
+      <FeaturesGuideModal
+        isOpen={isFeaturesGuideOpen}
+        onClose={() => setIsFeaturesGuideOpen(false)}
       />
     </div>
   );

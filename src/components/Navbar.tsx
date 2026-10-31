@@ -10,6 +10,7 @@ interface NavbarProps {
   onOpenArchitecture: () => void;
   onOpenLogs: () => void;
   onOpenDocs: () => void;
+  onOpenFeaturesGuide: () => void;
   activeTab: string;
   setActiveTab: (tab: string) => void;
   isSimulatedOffline: boolean;
@@ -21,6 +22,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenArchitecture,
   onOpenLogs,
   onOpenDocs,
+  onOpenFeaturesGuide,
   activeTab,
   setActiveTab,
   isSimulatedOffline,
@@ -87,6 +89,13 @@ export const Navbar: React.FC<NavbarProps> = ({
           <FileText className="w-3.5 h-3.5 text-slate-500" />
           API &amp; Setup
         </button>
+        <button
+          onClick={onOpenFeaturesGuide}
+          className="whitespace-nowrap transition-colors text-cyan-400 hover:text-cyan-300 font-semibold flex items-center gap-1.5"
+        >
+          <Shield className="w-3.5 h-3.5 text-cyan-400" />
+          Feature Guide
+        </button>
       </nav>
 
       {/* Zone 3: Neat Map Engine Selector & Status Indicator */}
@@ -127,11 +136,11 @@ export const Navbar: React.FC<NavbarProps> = ({
         )}
 
         <button
-          onClick={onOpenArchitecture}
-          className="px-3 py-1.5 text-xs font-semibold text-slate-100 bg-slate-850 hover:bg-slate-800 border border-slate-700/80 rounded-lg transition-colors whitespace-nowrap hidden sm:flex items-center gap-1.5"
+          onClick={onOpenFeaturesGuide}
+          className="px-3 py-1.5 text-xs font-semibold text-slate-950 bg-cyan-400 hover:bg-cyan-300 rounded-lg transition-colors whitespace-nowrap flex items-center gap-1.5 shadow-sm shadow-cyan-500/20"
         >
-          <Layers className="w-3.5 h-3.5 text-cyan-400" />
-          Architecture
+          <Shield className="w-3.5 h-3.5 text-slate-950" />
+          Features Guide
         </button>
       </div>
     </header>
